@@ -1,0 +1,30 @@
+[
+  {
+    "phone": "51949737257",
+    "name": null,
+    "messages": [
+      {
+        "id": "wamid.test.unique",
+        "wamid": "wamid.test.unique",
+        "from": "51949737257",
+        "from_phone": "51949737257",
+        "fromMe": true,
+        "from_me": true,
+        "direction": "outbound",
+        "sender": "bot",
+        "type": "text",
+        "text": "Prueba bot",
+        "mediaId": null,
+        "media_id": null,
+        "mediaUrl": null,
+        "media_url": null,
+        "timestamp": 1787706375,
+        "status": "sent"
+      }
+    ],
+    "unreadCount": 0,
+    "status": "active",
+    "lastMessage": "Prueba bot",
+    "updatedAt": 1787706375
+  }
+]

@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="es" class="h-full bg-slate-950 text-slate-100">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>WhatsApp Bot Admin Dashboard - LUMINZU</title>
+  <!-- Tailwind CSS CDN -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <!-- Socket.io Client for real-time live sync -->
+  <script src="https://cdn.socket.io/4.7.4/socket.io.min.js"></script>
+  <!-- Google Fonts: Inter & JetBrains Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: {
+            sans: ['Inter', 'sans-serif'],
+            mono: ['JetBrains Mono', 'monospace'],
+          },
+          colors: {
+            brand: {
+              50: '#e6f7f2',
+              100: '#b3ebda',
+              500: '#10b981',
+              600: '#059669',
+              700: '#047857',
+              whatsapp: '#00a884',
+              chatBg: '#0b141a',
+              userBubble: '#202c33',
+              botBubble: '#005c4b',
+            }
+          }
+        }
+      }
+    }
+  </script>
+  <script>
+    // The dashboard is backed by the same Render origin; no Meta secret reaches this page.
+    const LIVE_BACKEND_URL = window.location.origin;
+    let liveConversations = [];
+    let liveActivePhone = null;
+    let liveSocket = null;
+
+    function liveConversation(phone) { return liveConversations.find(c => c.phone === phone); }
+    function liveTime(value) { return new Date(Number(value) * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); }
+    function liveRenderConversationList() {
+      const search = (document.getElementById('searchInput')?.value || '').toLowerCase();
+      const list = document.getElementById('conversationList');
+      const filtered = liveConversations.filter(c => `${c.phone} ${c.name || ''} ${c.lastMessage || ''}`.toLowerCase().includes(search));
+      document.getElementById('conversationsCountBadge').textContent = liveConversations.length;
+      list.innerHTML = filtered.map(c => {
+        const last = c.messages?.[c.messages.length - 1];
+        return `<div onclick="selectConversation('${escapeHtml(c.phone)}')" class="p-3 cursor-pointer transition flex items-center justify-between ${c.phone === liveActivePhone ? 'bg-slate-800/90 border-l-4 border-emerald-500' : 'hover:bg-slate-800/40'}">
+          <div class="flex items-center space-x-3 overflow-hidden"><div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs">${c.phone.slice(-2)}</div>
+          <div class="truncate"><h4 class="text-xs font-semibold truncate">+${escapeHtml(c.phone)}</h4><p class="text-[11px] text-slate-400 truncate">${escapeHtml(c.lastMessage || last?.text || 'Sin mensajes')}</p></div></div>
+          <div class="flex flex-col items-end space-y-1"><span class="text-[10px] text-slate-500">${last ? liveTime(last.timestamp) : ''}</span>${c.unreadCount ? `<span class="w-4 h-4 bg-emerald-500 text-slate-950 font-bold text-[10px] rounded-full flex items-center justify-center">${c.unreadCount}</span>` : ''}</div>
+        </div>`;
+      }).join('');
+    }
+    function selectConversation(phone) {
+      liveActivePhone = phone;
+      const c = liveConversation(phone);
+      if (c) c.unreadCount = 0;
+      if (c) {
+        document.getElementById('chatContactName').childNodes[0].nodeValue = `+${c.phone} `;
+        document.getElementById('chatContactPhone').textContent = `(+${c.phone})`;
+        document.getElementById('chatAvatar').textContent = c.phone.slice(-2);
+      }
+      liveRenderConversationList(); liveRenderChatFeed();
+    }
+    function liveRenderChatFeed() {
+      const feed = document.getElementById('chatFeed');
+      const c = liveConversation(liveActivePhone);
+      feed.innerHTML = (c?.messages || []).slice().sort((a, b) => a.timestamp - b.timestamp).map(m => {
+        const outbound = m.direction === 'outbound' || m.fromMe || m.from_me;
+        const mediaId = m.mediaId || m.media_id;
+        const media = mediaId ? `${LIVE_BACKEND_URL}/api/media/${encodeURIComponent(mediaId)}` : (m.mediaUrl || m.media_url);
+        const mediaHtml = media && ['image', 'video', 'audio', 'document'].includes(m.type)
+          ? (m.type === 'image' ? `<img src="${media}" class="w-full max-h-64 object-cover rounded-xl mb-2 cursor-pointer" onclick="openImageModal('${media}', '')">` : `<a href="${media}" target="_blank" class="text-cyan-300 underline block mb-2">${escapeHtml(m.type.toUpperCase())}</a>`) : '';
+        return `<div class="max-w-[85%] md:max-w-[70%] rounded-2xl p-3 shadow-md ${outbound ? 'bg-emerald-800/90 ml-auto' : 'bg-slate-800 mr-auto'}">
+          <div class="text-[10px] font-bold ${outbound ? 'text-emerald-300' : 'text-cyan-400'} mb-1">${outbound ? (m.sender === 'agent' ? 'ASESOR' : 'BOT LUMINZU DENTAL') : `+${escapeHtml(c.phone)}`}</div>
+          ${mediaHtml}<p class="text-xs leading-relaxed whitespace-pre-wrap">${escapeHtml(m.text || '')}</p>
+          <div class="flex justify-end gap-1 text-[9px] text-slate-300 pt-1">${liveTime(m.timestamp)} ${outbound ? `<span>${m.status === 'read' || m.status === 'delivered' ? '✓✓' : '✓'}</span>` : ''}</div>
+        </div>`;
+      }).join('') || '<div class="h-full flex items-center justify-center text-slate-500 text-xs">No hay mensajes en esta conversación.</div>';
+      feed.scrollTop = feed.scrollHeight;
+    }
+    async function fetchConversationsFromBackend() {
+      const response = await fetch(`${LIVE_BACKEND_URL}/api/conversations`);
+      if (!response.ok) throw new Error('No se pudieron cargar las conversaciones');
+      liveConversations = await response.json();
+      if (!liveActivePhone && liveConversations[0]) liveActivePhone = liveConversations[0].phone;
+      liveRenderConversationList(); liveRenderChatFeed();
+    }
+    async function handleSendManualMessage(event) {
+      event.preventDefault();
+      const input = document.getElementById('manualMsgInput');
+      const text = input.value.trim();
+      if (!text || !liveActivePhone) return;
+      const response = await fetch(`${LIVE_BACKEND_URL}/api/conversations/${encodeURIComponent(liveActivePhone)}/send`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ type: 'text', text })
+      });
+      if (!response.ok) { showToast((await response.json()).error || 'No se pudo enviar'); return; }
+      input.value = ''; showToast('Mensaje enviado por WhatsApp');
+    }
+    function connectSocket() {
+      liveSocket = io(LIVE_BACKEND_URL, { transports: ['websocket', 'polling'], reconnection: true });
+      liveSocket.on('connect', () => { syncStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 live-dot'; syncStatusText.textContent = 'Conectado en Vivo'; });
+      liveSocket.on('disconnect', () => { syncStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-red-500'; syncStatusText.textContent = 'Desconectado'; });
+      liveSocket.on('connect_error', () => { syncStatusDot.className = 'w-2.5 h-2.5 rounded-full bg-amber-500'; syncStatusText.textContent = 'Reconexión'; });
+      liveSocket.on('init', data => { liveConversations = data; if (!liveActivePhone && data[0]) liveActivePhone = data[0].phone; liveRenderConversationList(); liveRenderChatFeed(); });
+      liveSocket.on('new_message', ({ phone, message }) => {
+        let c = liveConversation(phone); if (!c) { c = { phone, messages: [], unreadCount: 0 }; liveConversations.push(c); }
+        if (!c.messages.some(m => m.id === message.id)) c.messages.push(message);
+        if (phone !== liveActivePhone && message.direction === 'inbound') c.unreadCount = (c.unreadCount || 0) + 1;
+        liveRenderConversationList(); if (phone === liveActivePhone) liveRenderChatFeed();
+      });
+      liveSocket.on('update_conversations', data => {
+        liveConversations = data;
+        liveRenderConversationList();
+        liveRenderChatFeed();
+      });
+      ['message_sent', 'message_delivered', 'message_read', 'message_failed'].forEach(event => liveSocket.on(event, ({ phone, message }) => {
+        const c = liveConversation(phone); const m = c?.messages.find(item => item.id === message.id); if (m) m.status = message.status; liveRenderChatFeed();
+      }));
+    }
+    function simulateUserMessage() { showToast('La simulación está deshabilitada: conecte WhatsApp Cloud API'); }
+    function simulateBotReplyWithImage() { showToast('La simulación está deshabilitada: conecte WhatsApp Cloud API'); }
+    window.addEventListener('load', () => { fetchConversationsFromBackend().catch(error => showToast(error.message)); connectSocket(); });
+  </script>
+
+  <style>
+    ::-webkit-scrollbar {
+      width: 6px;
+      height: 6px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #0f172a;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #334155;
+      border-radius: 9999px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #475569;
+    }
+
+    .chat-pattern {
+      background-color: #0b141a;
+      background-image: radial-gradient(#1e293b 1px, transparent 1px);
+      background-size: 16px 16px;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(1.15); }
+    }
+    .live-dot {
+      animation: pulse-glow 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+  </style>
+</head>
+<body class="h-full flex flex-col font-sans overflow-hidden bg-slate-950 text-slate-100">
+
+  <header class="h-14 bg-slate-900 border-b border-slate-800 flex items-center justify-between px-4 shrink-0 select-none">
+    <div class="flex items-center space-x-3">
+      <div class="w-9 h-9 rounded-xl bg-gradient-to-tr from-emerald-600 to-teal-400 flex items-center justify-center text-white shadow-lg shadow-emerald-900/30">
+        <i class="fa-brands fa-whatsapp text-xl"></i>
+      </div>
+      <div>
+        <h1 class="font-bold text-sm tracking-wide text-slate-100 flex items-center gap-2">
+          WPP Admin - Bot Dental & Reumatología
+          <span class="text-[10px] px-2 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">Meta Graph API v18</span>
+        </h1>
+        <p class="text-[11px] text-slate-400">LUMINZU Clínica Dental & Bot Reumatología</p>
+      </div>
+    </div>
+
+    <div class="flex items-center space-x-3 text-xs">
+      <div class="hidden sm:flex items-center space-x-2 px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/60">
+        <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 live-dot" id="syncStatusDot"></span>
+        <span class="text-slate-300 font-medium" id="syncStatusText">Conectado en Vivo</span>
+      </div>
+
+      <button onclick="toggleBackendConfigModal()" class="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-200 transition flex items-center gap-1.5">
+        <i class="fa-solid fa-gear text-slate-400"></i>
+        <span class="hidden md:inline">Configurar API Backend</span>
+      </button>
+
+      <button onclick="resetDemoData()" class="px-3 py-1.5 rounded-lg bg-red-950/40 hover:bg-red-900/50 border border-red-800/50 text-red-300 transition flex items-center gap-1.5">
+        <i class="fa-solid fa-rotate text-red-400"></i>
+        <span class="hidden md:inline">Reiniciar Vista</span>
+      </button>
+    </div>
+  </header>
+
+  <div class="flex-1 flex overflow-hidden">
+
+    <!-- SIDEBAR NAVIGATION -->
+    <aside class="w-64 bg-slate-900 border-r border-slate-800 flex flex-col justify-between shrink-0 hidden md:flex">
+      <div class="p-3 space-y-6">
+        <div>
+          <p class="px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Monitoreo</p>
+          <nav class="space-y-1">
+            <button onclick="switchTab('chat')" id="nav-chat" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 transition">
+              <i class="fa-solid fa-comments text-emerald-400 text-sm"></i>
+              <span>Panel de Chat en Vivo</span>
+            </button>
+            <button onclick="switchTab('metrics')" id="nav-metrics" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+              <i class="fa-solid fa-chart-line text-sm"></i>
+              <span>Métricas de Conversión</span>
+            </button>
+            <button onclick="switchTab('queue')" id="nav-queue" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+              <i class="fa-solid fa-layer-group text-sm"></i>
+              <span>Cola de Envíos Meta</span>
+            </button>
+          </nav>
+        </div>
+
+        <div>
+          <p class="px-3 text-[10px] font-semibold text-slate-500 uppercase tracking-wider mb-2">Código e Infraestructura</p>
+          <nav class="space-y-1">
+            <button onclick="switchTab('dashboardCode')" id="nav-dashboardCode" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+              <i class="fa-brands fa-node-js text-emerald-400 text-sm"></i>
+              <span>1. Servidor Dashboard (dashboard.js)</span>
+            </button>
+            <button onclick="switchTab('botCode')" id="nav-botCode" class="w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 hover:bg-slate-800 hover:text-slate-200 transition">
+              <i class="fa-solid fa-robot text-cyan-400 text-sm"></i>
+              <span>2. Bot Controller (webhook.js)</span>
+            </button>
+          </nav>
+        </div>
+      </div>
+
+      <div class="p-3 border-t border-slate-800/80 bg-slate-900/50">
+        <div class="p-2.5 rounded-xl bg-slate-950/60 border border-slate-800 flex items-center justify-between">
+          <div class="flex items-center space-x-2">
+            <div class="w-2 h-2 rounded-full bg-emerald-400"></div>
+            <span class="text-[11px] text-slate-400">Live Sync Backend</span>
+          </div>
+          <span class="text-[10px] font-mono text-slate-500">v3.1.0</span>
+        </div>
+      </div>
+    </aside>
+
+    <main class="flex-1 flex overflow-hidden bg-slate-950">
+
+      <div id="tab-chat-view" class="flex-1 flex w-full h-full overflow-hidden">
+        
+        <!-- CONVERSATIONS LIST SIDEBAR -->
+        <div class="w-80 bg-slate-900 border-r border-slate-800 flex flex-col shrink-0">
+          <div class="p-3 border-b border-slate-800 space-y-2">
+            <div class="flex items-center justify-between">
+              <h2 class="text-xs font-bold text-slate-200 tracking-wider uppercase flex items-center gap-2">
+                Conversaciones
+                <span id="conversationsCountBadge" class="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 text-[10px] font-mono">1</span>
+              </h2>
+              <button onclick="fetchConversationsFromBackend()" class="text-slate-400 hover:text-slate-200 text-xs p-1 rounded hover:bg-slate-800 transition" title="Sincronizar con Servidor">
+                <i class="fa-solid fa-rotate-right"></i>
+              </button>
+            </div>
+            <div class="relative">
+              <i class="fa-solid fa-magnifying-glass absolute left-3 top-2.5 text-slate-500 text-xs"></i>
+              <input type="text" id="searchInput" oninput="renderConversationList()" placeholder="Buscar por teléfono o texto..." class="w-full bg-slate-950 border border-slate-800 rounded-xl pl-8 pr-3 py-1.5 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-emerald-500/50">
+            </div>
+          </div>
+
+          <div id="conversationList" class="flex-1 overflow-y-auto divide-y divide-slate-800/40">
+            <!-- Dynamic conversations rendered via JavaScript -->
+          </div>
+        </div>
+
+        <div class="flex-1 flex flex-col h-full bg-slate-950 overflow-hidden relative">
+          
+          <div class="h-14 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 flex items-center justify-between shrink-0 z-10">
+            <div class="flex items-center space-x-3">
+              <div class="relative">
+                <div class="w-9 h-9 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center text-slate-300 font-bold text-xs" id="chatAvatar">
+                  51
+                </div>
+                <span class="absolute bottom-0 right-0 w-2.5 h-2.5 bg-emerald-500 border-2 border-slate-900 rounded-full"></span>
+              </div>
+              <div>
+                <h3 class="text-xs font-bold text-slate-100 flex items-center gap-2" id="chatContactName">
+                  +51949737257
+                  <span class="text-[10px] font-normal text-slate-400 font-mono" id="chatContactPhone">(+51949737257)</span>
+                </h3>
+                <p class="text-[10px] text-emerald-400 font-medium flex items-center gap-1">
+                  <span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                  <span id="chatStatusText">Sincronización en Tiempo Real Activa</span>
+                </p>
+              </div>
+            </div>
+
+            <!-- SIMULATION TESTER BAR -->
+            <div class="flex items-center space-x-2 bg-slate-950/80 p-1.5 rounded-xl border border-slate-800">
+              <span class="text-[10px] font-semibold text-slate-400 uppercase tracking-wider px-2 hidden lg:inline">Probador de Chat:</span>
+              <button onclick="simulateUserMessage()" class="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 text-[11px] border border-slate-700 flex items-center gap-1 transition">
+                <i class="fa-solid fa-arrow-down-left text-cyan-400"></i>
+                <span>+Cliente</span>
+              </button>
+              <button onclick="simulateBotReplyWithImage()" class="px-2.5 py-1 rounded-lg bg-emerald-900/50 hover:bg-emerald-800/70 text-emerald-200 text-[11px] border border-emerald-700/60 flex items-center gap-1 transition">
+                <i class="fa-solid fa-robot text-emerald-400"></i>
+                <span>+Bot (Foto + Texto)</span>
+              </button>
+            </div>
+          </div>
+
+          <!-- Chat Messages Container -->
+          <div id="chatFeed" class="flex-1 overflow-y-auto p-4 chat-pattern space-y-3">
+            <!-- Messages rendered dynamically -->
+          </div>
+
+          <!-- Manual Reply Input Bar -->
+          <div class="p-3 bg-slate-900 border-t border-slate-800 shrink-0">
+            <form onsubmit="handleSendManualMessage(event)" class="flex items-center space-x-2">
+              <button type="button" onclick="triggerQuickImageUpload()" class="p-2.5 text-slate-400 hover:text-slate-200 hover:bg-slate-800 rounded-xl transition" title="Adjuntar Imagen de Tratamiento">
+                <i class="fa-solid fa-paperclip text-sm"></i>
+              </button>
+              <input type="text" id="manualMsgInput" placeholder="Escribe un mensaje manual (override de agente humano)..." class="flex-1 bg-slate-950 border border-slate-800 rounded-xl px-4 py-2 text-xs text-slate-100 placeholder-slate-500 focus:outline-none focus:border-emerald-500">
+              <button type="submit" class="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-emerald-900/30 transition flex items-center gap-1.5">
+                <span>Enviar</span>
+                <i class="fa-solid fa-paper-plane text-xs"></i>
+              </button>
+            </form>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-metrics-view" class="hidden flex-1 p-6 overflow-y-auto space-y-6">
+        <h2 class="text-base font-bold text-slate-100">Métricas y Rendimiento del Bot</h2>
+        <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl">
+            <p class="text-xs text-slate-400">Total Conversaciones</p>
+            <p class="text-2xl font-bold text-slate-100 mt-1" id="metricTotalChats">128</p>
+            <span class="text-[10px] text-emerald-400">+18% este mes</span>
+          </div>
+          <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl">
+            <p class="text-xs text-slate-400">Mensajes Procesados</p>
+            <p class="text-2xl font-bold text-slate-100 mt-1" id="metricTotalMsgs">1,842</p>
+            <span class="text-[10px] text-emerald-400">100% entregados</span>
+          </div>
+          <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl">
+            <p class="text-xs text-slate-400">Fotos de Ortodoncia Enviadas</p>
+            <p class="text-2xl font-bold text-emerald-400 mt-1" id="metricImagesSent">412</p>
+            <span class="text-[10px] text-slate-400">LUMINZU Dental</span>
+          </div>
+          <div class="p-4 bg-slate-900 border border-slate-800 rounded-2xl">
+            <p class="text-xs text-slate-400">Tiempo de Respuesta Gemini</p>
+            <p class="text-2xl font-bold text-cyan-400 mt-1">1.1s</p>
+            <span class="text-[10px] text-slate-400">Gemini 3 Flash</span>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-queue-view" class="hidden flex-1 p-6 overflow-y-auto space-y-4">
+        <h2 class="text-base font-bold text-slate-100">Cola de Salida Meta WhatsApp Cloud API</h2>
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-4 text-xs font-mono text-slate-300">
+          <p class="text-emerald-400 mb-2">// Estado de la cola Graph API v18.0</p>
+          <div class="space-y-2" id="queueList">
+            <div class="p-2 rounded bg-slate-950 border border-slate-800 flex justify-between">
+              <span>[2026-08-25T15:02:12Z] MSG_OUT_51949737257 -> STATUS: DELIVERED (IMAGE+TEXT)</span>
+              <span class="text-emerald-400">200 OK</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div id="tab-dashboardCode-view" class="hidden flex-1 p-6 overflow-y-auto space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">1. Servidor del Dashboard (dashboard.js)</h2>
+            <p class="text-xs text-slate-400">Copia este código en tu repositorio `whatsapp-dashboard` en Render.</p>
+          </div>
+          <button onclick="copyToClipboard('dashCodeBlock')" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5">
+            <i class="fa-solid fa-copy"></i> Copiar dashboard.js
+          </button>
+        </div>
+        <pre id="dashCodeBlock" class="p-4 bg-slate-900 border border-slate-800 rounded-2xl text-xs font-mono text-emerald-300 overflow-x-auto">
+const express = require('express');
+const http = require('http');
+const { Server } = require('socket.io');
+const cors = require('cors');
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
+
+app.use(cors({ origin: '*' }));
+app.use(express.json());
+
+// Memoria temporal de conversaciones
+const conversations = {};
+
+// Webhook para mensajes ENTRANTES del cliente
+app.post('/api/webhook', (req, res) => {
+  res.sendStatus(200);
+  const body = req.body;
+  
+  if (body.object === 'whatsapp_business_account') {
+    body.entry?.forEach(entry => {
+      entry.changes?.forEach(change => {
+        const value = change.value;
+        if (value && value.messages) {
+          value.messages.forEach(msg => {
+            const phone = msg.from;
+            if (!conversations[phone]) conversations[phone] = { phone, messages: [] };
+            
+            const isImage = msg.type === 'image';
+            const imageUrl = isImage ? (msg.image?.link || msg.image?.url) : null;
+            
+            const newMsg = {
+              id: msg.id || 'msg_' + Date.now(),
+              from: phone,
+              fromMe: false, // Mensaje del cliente (izquierda)
+              type: isImage ? 'image' : 'text',
+              text: msg.text?.body || msg.caption || '',
+              mediaUrl: imageUrl,
+              timestamp: msg.timestamp || Math.floor(Date.now() / 1000)
+            };
+
+            conversations[phone].messages.push(newMsg);
+            io.emit('new_message', { phone, message: newMsg });
+          });
+        }
+      });
+    });
+  }
+});
+
+// Endpoint para respuestas SALIENTES del Bot (derecha, verdes)
+app.post('/api/bot-reply', (req, res) => {
+  const { phone, text, mediaUrl } = req.body;
+  if (!phone) return res.status(400).json({ error: 'Phone required' });
+
+  const cleanPhone = String(phone).replace(/\D/g, '');
+  if (!conversations[cleanPhone]) conversations[cleanPhone] = { phone: cleanPhone, messages: [] };
+
+  const botMsg = {
+    id: 'bot_' + Date.now(),
+    from: cleanPhone,
+    fromMe: true, // Mensaje del bot (derecha, verde)
+    type: mediaUrl ? 'image' : 'text',
+    text: text || '',
+    mediaUrl: mediaUrl || null,
+    timestamp: Math.floor(Date.now() / 1000)
+  };
+
+  conversations[cleanPhone].messages.push(botMsg);
+  io.emit('new_message', { phone: cleanPhone, message: botMsg });
+  res.json({ success: true });
+});
+
+// Obtener todas las conversaciones
+app.get('/api/conversations', (req, res) => {
+  res.json(Object.values(conversations));
+});
+
+const PORT = process.env.PORT || 10000;
+server.listen(PORT, () => console.log(`Dashboard backend running on port ${PORT}`));
+        </pre>
+      </div>
+
+      <div id="tab-botCode-view" class="hidden flex-1 p-6 overflow-y-auto space-y-4">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-bold text-slate-100">2. Código para el Bot Principal (`src/dashboardForwarder.js`)</h2>
+            <p class="text-xs text-slate-400">Pega esto en la carpeta de tu bot (`BotMensajes`) para notificar al dashboard de forma no bloqueante.</p>
+          </div>
+          <button onclick="copyToClipboard('botCodeBlock')" class="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5">
+            <i class="fa-solid fa-copy"></i> Copiar dashboardForwarder.js
+          </button>
+        </div>
+        <pre id="botCodeBlock" class="p-4 bg-slate-900 border border-slate-800 rounded-2xl text-xs font-mono text-cyan-300 overflow-x-auto">
+const DASHBOARD_URL = 'https://whatsapp-dashboard-z9jm.onrender.com';
+
+// Forwarding helper "fire-and-forget"
+export function forwardToDashboard(reqBody) {
+  fetch(`${DASHBOARD_URL}/api/webhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(reqBody)
+  }).catch(err => console.error('Dashboard sync error:', err.message));
+}
+
+// Notificar respuestas salientes del bot (texto e imágenes)
+export function notifyBotReply(phone, text, mediaUrl = null, wamid = null) {
+  fetch(`${DASHBOARD_URL}/api/bot-reply`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      phone: String(phone).replace(/\D/g, ''),
+      text: text || '',
+      mediaUrl: mediaUrl || null,
+      wamid
+    })
+  }).catch(err => console.error('Bot reply sync error:', err.message));
+}
+        </pre>
+      </div>
+
+    </main>
+  </div>
+
+  <div id="imageModal" class="fixed inset-0 bg-black/90 backdrop-blur-md flex items-center justify-center z-50 hidden p-4" onclick="closeImageModal()">
+    <div class="relative max-w-3xl max-h-[90vh] flex flex-col items-center">
+      <img id="modalImage" src="" alt="Tratamiento LUMINZU" class="max-w-full max-h-[80vh] rounded-2xl border border-slate-700 shadow-2xl">
+      <p id="modalCaption" class="text-slate-300 text-xs mt-3 text-center bg-slate-900/80 px-4 py-2 rounded-xl border border-slate-800"></p>
+      <button class="absolute -top-10 right-0 text-white text-xl hover:text-emerald-400 transition">&times; Cerrar</button>
+    </div>
+  </div>
+
+  <div id="toast" class="fixed bottom-5 right-5 bg-emerald-600 text-white px-4 py-2.5 rounded-xl shadow-xl text-xs font-medium border border-emerald-400 hidden transition transform duration-300 z-50 flex items-center gap-2">
+    <i class="fa-solid fa-circle-check"></i>
+    <span id="toastMsg">Acción ejecutada correctamente</span>
+  </div>
+
+  <script>
+    let conversations = [
+      {
+        phone: '51949737257',
+        name: 'Cliente LUMINZU',
+        unreadCount: 0,
+        messages: [
+          { id: 'm1', fromMe: false, text: 'Hola buenos diaa vi au anuncio de carillaa', timestamp: Math.floor(Date.now()/1000) - 3600 },
+          { id: 'm2', fromMe: false, text: 'De brackets tmbn', timestamp: Math.floor(Date.now()/1000) - 3500 },
+          { id: 'm3', fromMe: false, text: 'Hola buenos diaa brakcets', timestamp: Math.floor(Date.now()/1000) - 3400 },
+          { id: 'm4', fromMe: false, text: 'Hola buenoa dias', timestamp: Math.floor(Date.now()/1000) - 1800 },
+          { id: 'm5', fromMe: false, text: 'Me intereaa brackets', timestamp: Math.floor(Date.now()/1000) - 1700 },
+          { id: 'm6', fromMe: false, text: 'Hoka qioero prefintar los bravkets', timestamp: Math.floor(Date.now()/1000) - 300 },
+          {
+            id: 'm7',
+            fromMe: true,
+            type: 'image',
+            mediaUrl: '/LUMINZU/ortodoncia_antes_despues.jpeg',
+            text: 'Los brackets en LUMINZU Clínica Dental van desde un rango inicial de 150 soles mensuales, previa evaluación diagnóstica para ver tu caso específico. Te invitamos a agendar tu cita para que el especialista te examine y te brinde el mejor plan.',
+            timestamp: Math.floor(Date.now()/1000) - 280
+          }
+        ]
+      }
+    ];
+
+    let activePhone = '51949737257';
+    let socket = null;
+    const BACKEND_URL = 'https://whatsapp-dashboard-z9jm.onrender.com';
+
+    // RENDER CONVERSATION LIST
+    function renderConversationList() {
+      const container = document.getElementById('conversationList');
+      const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+      container.innerHTML = '';
+
+      const filtered = conversations.filter(c => 
+        c.phone.includes(searchTerm) || 
+        (c.name && c.name.toLowerCase().includes(searchTerm)) ||
+        (c.messages.length > 0 && c.messages[c.messages.length - 1].text.toLowerCase().includes(searchTerm))
+      );
+
+      document.getElementById('conversationsCountBadge').innerText = conversations.length;
+
+      filtered.forEach(c => {
+        const lastMsg = c.messages.length > 0 ? c.messages[c.messages.length - 1] : { text: 'Sin mensajes', timestamp: Date.now()/1000 };
+        const isActive = c.phone === activePhone;
+        const formattedTime = new Date(lastMsg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        const itemHtml = `
+          <div onclick="selectConversation('${c.phone}')" class="p-3 cursor-pointer transition flex items-center justify-between ${isActive ? 'bg-slate-800/90 border-l-4 border-emerald-500' : 'hover:bg-slate-800/40'}">
+            <div class="flex items-center space-x-3 overflow-hidden">
+              <div class="w-10 h-10 rounded-full bg-slate-800 border border-slate-700 flex items-center justify-center font-bold text-xs text-slate-300 shrink-0">
+                ${c.phone.slice(-2)}
+              </div>
+              <div class="truncate">
+                <h4 class="text-xs font-semibold text-slate-200 truncate">+${c.phone}</h4>
+                <p class="text-[11px] text-slate-400 truncate mt-0.5">${lastMsg.type === 'image' ? '📷 Foto de tratamiento' : lastMsg.text}</p>
+              </div>
+            </div>
+            <div class="flex flex-col items-end space-y-1 shrink-0 ml-2">
+              <span class="text-[10px] text-slate-500 font-mono">${formattedTime}</span>
+              ${c.unreadCount > 0 ? `<span class="w-4 h-4 bg-emerald-500 text-slate-950 font-bold text-[10px] rounded-full flex items-center justify-center">${c.unreadCount}</span>` : ''}
+            </div>
+          </div>
+        `;
+        container.innerHTML += itemHtml;
+      });
+    }
+
+    // SELECT CONVERSATION
+    function selectConversation(phone) {
+      activePhone = phone;
+      const conv = conversations.find(c => c.phone === phone);
+      if (conv) {
+        conv.unreadCount = 0;
+        document.getElementById('chatContactName').childNodes[0].nodeValue = "+" + conv.phone + " ";
+        document.getElementById('chatContactPhone').innerText = `(+${conv.phone})`;
+        document.getElementById('chatAvatar').innerText = conv.phone.slice(-2);
+      }
+      renderConversationList();
+      renderChatFeed();
+    }
+
+    function renderChatFeed() {
+      const feed = document.getElementById('chatFeed');
+      feed.innerHTML = '';
+
+      const conv = conversations.find(c => c.phone === activePhone);
+      if (!conv || conv.messages.length === 0) {
+        feed.innerHTML = `<div class="h-full flex items-center justify-center text-slate-500 text-xs"><p>No hay mensajes en esta conversación.</p></div>`;
+        return;
+      }
+
+      conv.messages.forEach(msg => {
+        const isBot = msg.fromMe;
+        
+        // WhatsApp Chat Bubble Styling:
+        // BOT/AGENT (RIGHT): Green (#005c4b)
+        // CLIENT (LEFT): Dark Slate (#202c33)
+        const bubbleBg = isBot 
+          ? 'bg-emerald-800/90 text-white ml-auto border border-emerald-600/50' 
+          : 'bg-slate-800 text-slate-100 mr-auto border border-slate-700/80';
+
+        const senderLabel = isBot ? 'BOT LUMINZU DENTAL' : ('+ ' + conv.phone);
+        const labelColor = isBot ? 'text-emerald-300' : 'text-cyan-400';
+        const formattedTime = new Date(msg.timestamp * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+        let imageContent = '';
+        if (msg.type === 'image' && msg.mediaUrl) {
+          imageContent = `
+            <div class="mb-2 cursor-pointer group relative overflow-hidden rounded-xl border border-black/20" onclick="openImageModal('${msg.mediaUrl}', '${escapeHtml(msg.text)}')">
+              <img src="${msg.mediaUrl}" alt="Foto tratamiento" class="w-full max-h-64 object-cover group-hover:scale-105 transition duration-300" onerror="this.src='https://bot-mensajes-dental.onrender.com/media/fachada.jpeg'">
+              <div class="absolute inset-0 bg-black/30 opacity-0 group-hover:opacity-100 transition flex items-center justify-center">
+                <i class="fa-solid fa-expand text-white text-lg"></i>
+              </div>
+            </div>
+          `;
+        }
+
+        const msgHtml = `
+          <div class="max-w-[85%] md:max-w-[70%] rounded-2xl p-3 shadow-md ${bubbleBg} space-y-1">
+            <div class="flex items-center justify-between text-[10px] font-bold ${labelColor} tracking-wider mb-1">
+              <span>${senderLabel}</span>
+              ${isBot ? '<i class="fa-solid fa-robot ml-1 text-emerald-300"></i>' : ''}
+            </div>
+
+            ${imageContent}
+
+            <p class="text-xs leading-relaxed whitespace-pre-wrap">${escapeHtml(msg.text)}</p>
+
+            <div class="flex items-center justify-end space-x-1 text-[9px] text-slate-300 opacity-80 pt-1 font-mono">
+              <span>${formattedTime}</span>
+              ${isBot ? '<i class="fa-solid fa-check-double text-cyan-300"></i>' : ''}
+            </div>
+          </div>
+        `;
+        feed.innerHTML += msgHtml;
+      });
+
+      feed.scrollTop = feed.scrollHeight;
+    }
+
+    // UTILITIES
+    function escapeHtml(str) {
+      if (!str) return '';
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    function showToast(text) {
+      const toast = document.getElementById('toast');
+      document.getElementById('toastMsg').innerText = text;
+      toast.classList.remove('hidden');
+      setTimeout(() => toast.classList.add('hidden'), 3000);
+    }
+
+    // LIVE SIMULATION HELPERS
+    function simulateUserMessage() {
+      const conv = conversations.find(c => c.phone === activePhone);
+      if (!conv) return;
+
+      const texts = [
+        "¿Cuáles son las formas de pago para las carillas?",
+        "¿Tienen citas disponibles para consulta este sábado?",
+        "Quisiera saber el precio de la primera consulta de ortodoncia."
+      ];
+      const randomText = texts[Math.floor(Math.random() * texts.length)];
+
+      conv.messages.push({
+        id: 'msg_' + Date.now(),
+        fromMe: false,
+        text: randomText,
+        timestamp: Math.floor(Date.now() / 1000)
+      });
+
+      renderConversationList();
+      renderChatFeed();
+      showToast("Nuevo mensaje simulado de cliente");
+    }
+
+    function simulateBotReplyWithImage() {
+      const conv = conversations.find(c => c.phone === activePhone);
+      if (!conv) return;
+
+      conv.messages.push({
+        id: 'bot_' + Date.now(),
+        fromMe: true,
+        type: 'image',
+        mediaUrl: '/LUMINZU/ortodoncia_antes_despues.jpeg',
+        text: 'Te compartimos la muestra de resultados de carillas dentales en LUMINZU. ¿Te gustaría agendar una evaluación diagnóstica?',
+        timestamp: Math.floor(Date.now() / 1000)
+      });
+
+      renderConversationList();
+      renderChatFeed();
+      showToast("Respuesta del bot simulada (con foto)");
+    }
+
+    function handleSendManualMessage(e) {
+      e.preventDefault();
+      const input = document.getElementById('manualMsgInput');
+      const text = input.value.trim();
+      if (!text) return;
+
+      const conv = conversations.find(c => c.phone === activePhone);
+      if (!conv) return;
+
+      conv.messages.push({
+        id: 'manual_' + Date.now(),
+        fromMe: true,
+        text: text,
+        timestamp: Math.floor(Date.now() / 1000)
+      });
+
+      input.value = '';
+      renderConversationList();
+      renderChatFeed();
+      showToast("Mensaje enviado");
+    }
+
+    // WEBSOCKET CONNECT
+    function connectSocket() {
+      try {
+        socket = io(BACKEND_URL, { transports: ['websocket', 'polling'] });
+        
+        socket.on('connect', () => {
+          document.getElementById('syncStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-emerald-500 live-dot';
+          document.getElementById('syncStatusText').innerText = 'Conectado en Vivo (Socket.io)';
+        });
+
+        socket.on('new_message', (data) => {
+          let conv = conversations.find(c => c.phone === data.phone);
+          if (!conv) {
+            conv = { phone: data.phone, messages: [] };
+            conversations.push(conv);
+          }
+          conv.messages.push(data.message);
+          renderConversationList();
+          if (data.phone === activePhone) renderChatFeed();
+        });
+
+        socket.on('disconnect', () => {
+          document.getElementById('syncStatusDot').className = 'w-2.5 h-2.5 rounded-full bg-amber-500';
+          document.getElementById('syncStatusText').innerText = 'Reconectando con Backend...';
+        });
+      } catch (err) {
+        console.warn('Socket connection error:', err);
+      }
+    }
+
+    // TAB SWITCHING
+    function switchTab(tab) {
+      const tabs = ['chat', 'metrics', 'queue', 'dashboardCode', 'botCode'];
+      tabs.forEach(t => {
+        const view = document.getElementById(`tab-${t}-view`);
+        const nav = document.getElementById(`nav-${t}`);
+        if (view) view.classList.add('hidden');
+        if (nav) {
+          nav.classList.remove('bg-emerald-500/10', 'text-emerald-400', 'border', 'border-emerald-500/20');
+          nav.classList.add('text-slate-400');
+        }
+      });
+
+      const targetView = document.getElementById(`tab-${tab}-view`);
+      const targetNav = document.getElementById(`nav-${tab}`);
+      if (targetView) targetView.classList.remove('hidden');
+      if (targetNav) {
+        targetNav.classList.add('bg-emerald-500/10', 'text-emerald-400', 'border', 'border-emerald-500/20');
+        targetNav.classList.remove('text-slate-400');
+      }
+    }
+
+    // IMAGE MODAL
+    function openImageModal(url, caption) {
+      document.getElementById('modalImage').src = url;
+      document.getElementById('modalCaption').innerText = caption || 'Fotografía de tratamiento LUMINZU';
+      document.getElementById('imageModal').classList.remove('hidden');
+    }
+
+    function closeImageModal() {
+      document.getElementById('imageModal').classList.add('hidden');
+    }
+
+    function copyToClipboard(id) {
+      const code = document.getElementById(id).innerText;
+      navigator.clipboard.writeText(code).then(() => {
+        showToast("¡Código copiado al portapapeles!");
+      });
+    }
+
+    function resetDemoData() {
+      selectConversation('51949737257');
+      showToast("Vista de chat actualizada");
+    }
+
+    window.onload = function() {
+      renderConversationList();
+      renderChatFeed();
+      connectSocket();
+    };
+  </script>
+  <script>
+    // Replace the legacy demo handlers with the live API handlers after all page scripts load.
+    window.renderConversationList = liveRenderConversationList;
+    window.renderChatFeed = liveRenderChatFeed;
+    window.selectConversation = selectConversation;
+    window.fetchConversationsFromBackend = fetchConversationsFromBackend;
+    window.handleSendManualMessage = handleSendManualMessage;
+    window.simulateUserMessage = simulateUserMessage;
+    window.simulateBotReplyWithImage = simulateBotReplyWithImage;
+    window.onload = () => {
+      fetchConversationsFromBackend().catch(error => showToast(error.message));
+      connectSocket();
+    };
+  </script>
+</body>
+</html>
